@@ -49,6 +49,23 @@ const hocuspocusServer = Server.configure({
           if (error) {
             if (error.code === 'PGRST116') {
               console.log(`Document for ticket ${documentName} not found, will create new`);
+
+              const { error: insertError } = await supabase
+                .from(DOCUMENTS_TABLE)
+                .insert({
+                  ticket_id: documentName,
+                  ydoc_state: '',
+                  updated_at: new Date().toISOString()
+                });
+
+              if (insertError) {
+                console.error(`Error creating document for ticket ${documentName}:`, insertError);
+                throw insertError;
+              }
+
+              console.log(`Document for ticket ${documentName} created successfully`);
+              return null;
+
               return null;
             }
             throw error;
