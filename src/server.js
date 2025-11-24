@@ -44,6 +44,7 @@ const hocuspocusServer = Server.configure({
             .select('ydoc_state')
             .eq('ticket_id', documentName)
             .single();
+          console.log("🚀 ~ data:", data)
 
           if (error) {
             if (error.code === 'PGRST116') {
