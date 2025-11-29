@@ -86,7 +86,7 @@ const hocuspocusServer = Server.configure({
 
           if (data && data.ydoc_state) {
             try {
-              let bytes: Uint8Array;
+              let bytes;
 
               // Log the actual type and first few characters for debugging
               const dataType = typeof data.ydoc_state;
