@@ -86,7 +86,7 @@ const hocuspocusServer = Server.configure({
 
           if (data && data.ydoc_state) {
             try {
-              let bytes;
+              let bytes: Uint8Array;
 
               // Log the actual type and first few characters for debugging
               const dataType = typeof data.ydoc_state;
@@ -108,21 +108,38 @@ const hocuspocusServer = Server.configure({
                 );
                 return bytes;
               } else if (typeof data.ydoc_state === "string") {
-                // Supabase returns bytea as base64 string when using .select()
-                // We stored it as base64, so we need to decode it properly
+                // Supabase returns bytea as hex string with \x prefix when using .select()
+                // We stored it as base64, but Supabase converted it to bytea (hex format)
                 try {
-                  // Check if it looks like base64 (alphanumeric + / + =)
-                  const isBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(
-                    data.ydoc_state
-                  );
+                  // Check if it's hex format (starts with \x)
+                  if (data.ydoc_state.startsWith("\\x")) {
+                    // Hex format - this is how Supabase returns bytea
+                    // IMPORTANT: Supabase stores our base64 string as text in bytea,
+                    // so the hex is actually hex representation of the base64 string, not the binary data
+                    // We need to: hex -> base64 string -> binary data
+                    const hexString = data.ydoc_state.replace(/^\\x/, "");
 
-                  if (isBase64) {
-                    // Decode base64 to Buffer, then to Uint8Array
-                    const buffer = Buffer.from(data.ydoc_state, "base64");
+                    // Step 1: Decode hex to get the base64 string
+                    const base64String = Buffer.from(hexString, "hex").toString(
+                      "utf8"
+                    );
+
+                    console.log(
+                      `[Database] Decoded hex to base64 string (length: ${base64String.length})`
+                    );
+                    console.log(
+                      `[Database] Base64 preview: ${base64String.substring(
+                        0,
+                        50
+                      )}...`
+                    );
+
+                    // Step 2: Decode base64 to get the actual binary data
+                    const buffer = Buffer.from(base64String, "base64");
                     bytes = new Uint8Array(buffer);
 
                     console.log(
-                      `[Database] Document for ticket ${documentName} loaded successfully (base64 decoded, ${bytes.length} bytes)`
+                      `[Database] Document for ticket ${documentName} loaded successfully (hex->base64->binary, ${bytes.length} bytes)`
                     );
                     console.log(
                       `[Database] First 10 bytes: ${Array.from(
@@ -131,21 +148,23 @@ const hocuspocusServer = Server.configure({
                     );
                     return bytes;
                   } else {
-                    // Not base64 - might be hex or raw binary
-                    console.log(
-                      `[Database] Data doesn't look like base64, trying hex decode`
+                    // Might be base64 (if Supabase returns it differently)
+                    // Check if it looks like base64
+                    const isBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(
+                      data.ydoc_state
                     );
-                    // Try hex decode
-                    if (data.ydoc_state.startsWith("\\x")) {
-                      const hexString = data.ydoc_state.replace(/^\\x/, "");
-                      const buffer = Buffer.from(hexString, "hex");
+
+                    if (isBase64) {
+                      // Decode base64 to Buffer, then to Uint8Array
+                      const buffer = Buffer.from(data.ydoc_state, "base64");
                       bytes = new Uint8Array(buffer);
+
                       console.log(
-                        `[Database] Document for ticket ${documentName} loaded successfully (hex decoded, ${bytes.length} bytes)`
+                        `[Database] Document for ticket ${documentName} loaded successfully (base64 decoded, ${bytes.length} bytes)`
                       );
                       return bytes;
                     } else {
-                      // Try as raw binary string
+                      // Try as raw binary string (shouldn't happen, but just in case)
                       bytes = new Uint8Array(data.ydoc_state.length);
                       for (let i = 0; i < data.ydoc_state.length; i++) {
                         bytes[i] = data.ydoc_state.charCodeAt(i);
@@ -198,9 +217,16 @@ const hocuspocusServer = Server.configure({
         );
 
         try {
-          // Convert Uint8Array to Buffer, then to base64
-          // This ensures proper encoding for Supabase bytea field
+          // Convert Uint8Array to Buffer
+          // Supabase will handle Buffer as bytea automatically
           const buffer = Buffer.from(state);
+
+          // Use RPC or direct bytea insertion
+          // For bytea fields, we need to use the proper format
+          // Supabase accepts Buffer or base64 string for bytea
+          // But when reading, it returns hex format with \x prefix
+
+          // Convert to base64 for storage (Supabase will convert it to bytea)
           const base64Content = buffer.toString("base64");
 
           console.log(
