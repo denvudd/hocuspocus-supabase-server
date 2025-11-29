@@ -19,7 +19,7 @@ const DOCUMENTS_TABLE = "ticket_documents";
 
 // Create Express app for health checks
 const app = express();
-const httpServer = createServer(app);
+createServer(app); // HTTP server for health checks
 
 app.get("/", (req, res) => {
   res.json({
@@ -43,6 +43,8 @@ const hocuspocusServer = Server.configure({
         console.log(`[Database] Fetching document for ticket: ${documentName}`);
 
         try {
+          // Try to get bytea as base64 string
+          // Supabase automatically converts bytea to base64 when using .select()
           const { data, error } = await supabase
             .from(DOCUMENTS_TABLE)
             .select("ydoc_state")
@@ -53,6 +55,17 @@ const hocuspocusServer = Server.configure({
             hasData: !!data,
             hasError: !!error,
             errorCode: error?.code,
+            dataType: data?.ydoc_state ? typeof data.ydoc_state : "no data",
+            dataLength: data?.ydoc_state
+              ? typeof data.ydoc_state === "string"
+                ? data.ydoc_state.length
+                : "non-string"
+              : 0,
+            dataPreview: data?.ydoc_state
+              ? typeof data.ydoc_state === "string"
+                ? data.ydoc_state.substring(0, 100)
+                : "non-string"
+              : "no data",
           });
 
           if (error) {
@@ -73,48 +86,87 @@ const hocuspocusServer = Server.configure({
 
           if (data && data.ydoc_state) {
             try {
-              let binaryString;
+              let bytes;
 
-              // Supabase can return bytea in different formats:
-              // 1. As base64 string (when using .select())
-              // 2. As hex string starting with \x (when stored as bytea)
-              // 3. As Buffer (in some cases)
+              // Log the actual type and first few characters for debugging
+              const dataType = typeof data.ydoc_state;
+              const preview =
+                typeof data.ydoc_state === "string"
+                  ? data.ydoc_state.substring(0, 50)
+                  : "non-string";
+              console.log(
+                `[Database] Data type: ${dataType}, preview: ${preview}`
+              );
 
+              // Supabase returns bytea as base64-encoded string when using .select()
+              // We stored it as base64, so we need to decode it
               if (Buffer.isBuffer(data.ydoc_state)) {
-                // Already a Buffer
-                const bytes = new Uint8Array(data.ydoc_state);
+                // Already a Buffer - convert directly
+                bytes = new Uint8Array(data.ydoc_state);
                 console.log(
-                  `[Database] Document for ticket ${documentName} loaded successfully (Buffer format)`
+                  `[Database] Document for ticket ${documentName} loaded successfully (Buffer format, ${bytes.length} bytes)`
                 );
                 return bytes;
               } else if (typeof data.ydoc_state === "string") {
-                // Check if it's hex format (starts with \x)
-                if (data.ydoc_state.startsWith("\\x")) {
-                  // Hex format - convert hex to base64, then to binary
-                  const hexString = data.ydoc_state.replace(/^\\x/, "");
-                  const buffer = Buffer.from(hexString, "hex");
-                  binaryString = buffer.toString("binary");
-                } else {
-                  // Assume it's base64 string
-                  binaryString = atob(data.ydoc_state);
+                // Supabase returns bytea as base64 string when using .select()
+                // We stored it as base64, so we need to decode it properly
+                try {
+                  // Check if it looks like base64 (alphanumeric + / + =)
+                  const isBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(
+                    data.ydoc_state
+                  );
+
+                  if (isBase64) {
+                    // Decode base64 to Buffer, then to Uint8Array
+                    const buffer = Buffer.from(data.ydoc_state, "base64");
+                    bytes = new Uint8Array(buffer);
+
+                    console.log(
+                      `[Database] Document for ticket ${documentName} loaded successfully (base64 decoded, ${bytes.length} bytes)`
+                    );
+                    console.log(
+                      `[Database] First 10 bytes: ${Array.from(
+                        bytes.slice(0, 10)
+                      ).join(",")}`
+                    );
+                    return bytes;
+                  } else {
+                    // Not base64 - might be hex or raw binary
+                    console.log(
+                      `[Database] Data doesn't look like base64, trying hex decode`
+                    );
+                    // Try hex decode
+                    if (data.ydoc_state.startsWith("\\x")) {
+                      const hexString = data.ydoc_state.replace(/^\\x/, "");
+                      const buffer = Buffer.from(hexString, "hex");
+                      bytes = new Uint8Array(buffer);
+                      console.log(
+                        `[Database] Document for ticket ${documentName} loaded successfully (hex decoded, ${bytes.length} bytes)`
+                      );
+                      return bytes;
+                    } else {
+                      // Try as raw binary string
+                      bytes = new Uint8Array(data.ydoc_state.length);
+                      for (let i = 0; i < data.ydoc_state.length; i++) {
+                        bytes[i] = data.ydoc_state.charCodeAt(i);
+                      }
+                      console.log(
+                        `[Database] Document for ticket ${documentName} loaded successfully (raw binary, ${bytes.length} bytes)`
+                      );
+                      return bytes;
+                    }
+                  }
+                } catch (decodeError) {
+                  console.error(`[Database] Decode error:`, decodeError);
+                  // If decoding fails, return null to create new document
+                  return null;
                 }
               } else {
                 console.warn(
-                  `[Database] Unexpected data format for ${documentName}, returning null`
+                  `[Database] Unexpected data format for ${documentName}: ${typeof data.ydoc_state}, returning null`
                 );
                 return null;
               }
-
-              // Convert binary string to Uint8Array
-              const bytes = new Uint8Array(binaryString.length);
-              for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-              }
-
-              console.log(
-                `[Database] Document for ticket ${documentName} loaded successfully (${bytes.length} bytes)`
-              );
-              return bytes;
             } catch (decodeError) {
               console.error(
                 `[Database] Error decoding document for ticket ${documentName}:`,
@@ -146,13 +198,14 @@ const hocuspocusServer = Server.configure({
         );
 
         try {
-          // Convert Uint8Array to binary string, then to base64
-          const bytes = new Uint8Array(state);
-          let binary = "";
-          for (let i = 0; i < bytes.length; i++) {
-            binary += String.fromCharCode(bytes[i]);
-          }
-          const base64Content = btoa(binary);
+          // Convert Uint8Array to Buffer, then to base64
+          // This ensures proper encoding for Supabase bytea field
+          const buffer = Buffer.from(state);
+          const base64Content = buffer.toString("base64");
+
+          console.log(
+            `[Database] Encoded to base64: ${base64Content.substring(0, 50)}...`
+          );
 
           const { error } = await supabase.from(DOCUMENTS_TABLE).upsert(
             {
@@ -187,7 +240,7 @@ const hocuspocusServer = Server.configure({
     }),
   ],
 
-  async onConnect({ documentName, requestHeaders }) {
+  async onConnect({ documentName }) {
     console.log(`[Server] Client connected to document: ${documentName}`);
   },
 
@@ -195,11 +248,11 @@ const hocuspocusServer = Server.configure({
     console.log(`[Server] Client disconnected from document: ${documentName}`);
   },
 
-  async onUpgrade({ request, socket, head }) {
+  async onUpgrade() {
     console.log("[Server] WebSocket upgrade requested");
   },
 
-  async onChange({ documentName, context }) {
+  async onChange({ documentName }) {
     console.log(`[Server] Document ${documentName} changed`);
   },
 
