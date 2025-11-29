@@ -17,9 +17,8 @@ const supabase = createClient(
 
 const DOCUMENTS_TABLE = "ticket_documents";
 
-// Create Express app for health checks
 const app = express();
-createServer(app); // HTTP server for health checks
+createServer(app);
 
 app.get("/", (req, res) => {
   res.json({
@@ -43,7 +42,6 @@ const hocuspocusServer = Server.configure({
         console.log(`[Database] Fetching document for ticket: ${documentName}`);
 
         try {
-          // Try to get bytea as base64 string
           // Supabase automatically converts bytea to base64 when using .select()
           const { data, error } = await supabase
             .from(DOCUMENTS_TABLE)
@@ -70,8 +68,6 @@ const hocuspocusServer = Server.configure({
 
           if (error) {
             if (error.code === "PGRST116") {
-              // Document not found - return null to let Hocuspocus create empty document
-              // Don't create it here, it will be created on first save
               console.log(
                 `[Database] Document for ticket ${documentName} not found, will create on first save`
               );
@@ -88,28 +84,7 @@ const hocuspocusServer = Server.configure({
             try {
               let bytes;
 
-              // Log the actual type and first few characters for debugging
-              const dataType = typeof data.ydoc_state;
-              const preview =
-                typeof data.ydoc_state === "string"
-                  ? data.ydoc_state.substring(0, 50)
-                  : "non-string";
-              console.log(
-                `[Database] Data type: ${dataType}, preview: ${preview}`
-              );
-
-              // Supabase returns bytea as base64-encoded string when using .select()
-              // We stored it as base64, so we need to decode it
-              if (Buffer.isBuffer(data.ydoc_state)) {
-                // Already a Buffer - convert directly
-                bytes = new Uint8Array(data.ydoc_state);
-                console.log(
-                  `[Database] Document for ticket ${documentName} loaded successfully (Buffer format, ${bytes.length} bytes)`
-                );
-                return bytes;
-              } else if (typeof data.ydoc_state === "string") {
-                // Supabase returns bytea as hex string with \x prefix when using .select()
-                // We stored it as base64, but Supabase converted it to bytea (hex format)
+              if (typeof data.ydoc_state === "string") {
                 try {
                   // Check if it's hex format (starts with \x)
                   if (data.ydoc_state.startsWith("\\x")) {
@@ -124,65 +99,19 @@ const hocuspocusServer = Server.configure({
                       "utf8"
                     );
 
-                    console.log(
-                      `[Database] Decoded hex to base64 string (length: ${base64String.length})`
-                    );
-                    console.log(
-                      `[Database] Base64 preview: ${base64String.substring(
-                        0,
-                        50
-                      )}...`
-                    );
-
                     // Step 2: Decode base64 to get the actual binary data
                     const buffer = Buffer.from(base64String, "base64");
                     bytes = new Uint8Array(buffer);
 
-                    console.log(
-                      `[Database] Document for ticket ${documentName} loaded successfully (hex->base64->binary, ${bytes.length} bytes)`
-                    );
-                    console.log(
-                      `[Database] First 10 bytes: ${Array.from(
-                        bytes.slice(0, 10)
-                      ).join(",")}`
-                    );
                     return bytes;
-                  } else {
-                    // Might be base64 (if Supabase returns it differently)
-                    // Check if it looks like base64
-                    const isBase64 = /^[A-Za-z0-9+/]*={0,2}$/.test(
-                      data.ydoc_state
-                    );
-
-                    if (isBase64) {
-                      // Decode base64 to Buffer, then to Uint8Array
-                      const buffer = Buffer.from(data.ydoc_state, "base64");
-                      bytes = new Uint8Array(buffer);
-
-                      console.log(
-                        `[Database] Document for ticket ${documentName} loaded successfully (base64 decoded, ${bytes.length} bytes)`
-                      );
-                      return bytes;
-                    } else {
-                      // Try as raw binary string (shouldn't happen, but just in case)
-                      bytes = new Uint8Array(data.ydoc_state.length);
-                      for (let i = 0; i < data.ydoc_state.length; i++) {
-                        bytes[i] = data.ydoc_state.charCodeAt(i);
-                      }
-                      console.log(
-                        `[Database] Document for ticket ${documentName} loaded successfully (raw binary, ${bytes.length} bytes)`
-                      );
-                      return bytes;
-                    }
                   }
                 } catch (decodeError) {
                   console.error(`[Database] Decode error:`, decodeError);
-                  // If decoding fails, return null to create new document
                   return null;
                 }
               } else {
                 console.warn(
-                  `[Database] Unexpected data format for ${documentName}: ${typeof data.ydoc_state}, returning null`
+                  `[Database] Unexpected data format for ${documentName}: ${typeof data.ydoc_state}`
                 );
                 return null;
               }
@@ -191,22 +120,17 @@ const hocuspocusServer = Server.configure({
                 `[Database] Error decoding document for ticket ${documentName}:`,
                 decodeError
               );
-              // Return null if decoding fails - will create new document
               return null;
             }
           }
 
-          // No data or empty ydoc_state
-          console.log(
-            `[Database] No document data for ticket ${documentName}, returning null`
-          );
+          console.log(`[Database] No document data for ticket ${documentName}`);
           return null;
         } catch (error) {
           console.error(
             `[Database] Error fetching document for ticket ${documentName}:`,
             error
           );
-          // Return null on error - Hocuspocus will create empty document
           return null;
         }
       },
@@ -217,21 +141,11 @@ const hocuspocusServer = Server.configure({
         );
 
         try {
-          // Convert Uint8Array to Buffer
           // Supabase will handle Buffer as bytea automatically
           const buffer = Buffer.from(state);
 
-          // Use RPC or direct bytea insertion
-          // For bytea fields, we need to use the proper format
-          // Supabase accepts Buffer or base64 string for bytea
-          // But when reading, it returns hex format with \x prefix
-
           // Convert to base64 for storage (Supabase will convert it to bytea)
           const base64Content = buffer.toString("base64");
-
-          console.log(
-            `[Database] Encoded to base64: ${base64Content.substring(0, 50)}...`
-          );
 
           const { error } = await supabase.from(DOCUMENTS_TABLE).upsert(
             {
